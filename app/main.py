@@ -144,6 +144,8 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
         for row, col, distance in zip(rows, cols, distances):
             k = float(temp[row, col])
             points.append({
+                "row": int(row),
+                "col": int(col),
                 "lat": round(float(lat[row, col]), 4),
                 "lon": round(float(lon[row, col]), 4),
                 "cloud_top_k": round(k, 1),
