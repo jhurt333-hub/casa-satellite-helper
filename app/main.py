@@ -103,6 +103,189 @@ def haversine_km(lat: np.ndarray, lon: np.ndarray, lat0: float, lon0: float) -> 
     a = np.sin(dp / 2) ** 2 + np.cos(p1) * math.cos(p2) * np.sin(dl / 2) ** 2
     return 6371.0088 * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
+def cluster_storm_cells(
+    cold: np.ndarray,
+    temp: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    deep_k: float,
+    center_lat: float,
+    center_lon: float,
+    min_pixels: int = 3,
+) -> list[dict]:
+    visited = np.zeros(cold.shape, dtype=bool)
+    storm_cells = []
+
+    neighbor_offsets = (
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1),
+    )
+
+    height, width = cold.shape
+
+    for start_row, start_col in zip(*np.where(cold)):
+        if visited[start_row, start_col]:
+            continue
+
+        stack = [(int(start_row), int(start_col))]
+        visited[start_row, start_col] = True
+        component = []
+
+        while stack:
+            row, col = stack.pop()
+            component.append((row, col))
+
+            for row_offset, col_offset in neighbor_offsets:
+                next_row = row + row_offset
+                next_col = col + col_offset
+
+                if (
+                    next_row < 0
+                    or next_row >= height
+                    or next_col < 0
+                    or next_col >= width
+                    or visited[next_row, next_col]
+                    or not cold[next_row, next_col]
+                ):
+                    continue
+
+                visited[next_row, next_col] = True
+                stack.append((next_row, next_col))
+
+        if len(component) < min_pixels:
+            continue
+
+        component_rows = np.asarray(
+            [item[0] for item in component],
+            dtype=int,
+        )
+        component_cols = np.asarray(
+            [item[1] for item in component],
+            dtype=int,
+        )
+
+        component_lat = lat[
+            component_rows,
+            component_cols
+        ]
+        component_lon = lon[
+            component_rows,
+            component_cols
+        ]
+        component_temp = temp[
+            component_rows,
+            component_cols
+        ]
+
+        finite = (
+            np.isfinite(component_lat)
+            & np.isfinite(component_lon)
+            & np.isfinite(component_temp)
+        )
+
+        if not finite.any():
+            continue
+
+        component_lat = component_lat[finite]
+        component_lon = component_lon[finite]
+        component_temp = component_temp[finite]
+
+        center_cell_lat = float(
+            np.mean(component_lat)
+        )
+        center_cell_lon = float(
+            np.mean(component_lon)
+        )
+
+        distance_km = float(
+            haversine_km(
+                np.asarray([center_cell_lat]),
+                np.asarray([center_cell_lon]),
+                center_lat,
+                center_lon,
+            )[0]
+        )
+
+        latitude_difference = math.radians(
+            center_cell_lat - center_lat
+        )
+        longitude_difference = math.radians(
+            center_cell_lon - center_lon
+        )
+
+        bearing_y = (
+            math.sin(longitude_difference)
+            * math.cos(math.radians(center_cell_lat))
+        )
+
+        bearing_x = (
+            math.cos(math.radians(center_lat))
+            * math.sin(math.radians(center_cell_lat))
+            - math.sin(math.radians(center_lat))
+            * math.cos(math.radians(center_cell_lat))
+            * math.cos(longitude_difference)
+        )
+
+        bearing_degrees = (
+            math.degrees(
+                math.atan2(bearing_y, bearing_x)
+            )
+            + 360
+        ) % 360
+
+        coldest_k = float(
+            np.min(component_temp)
+        )
+        deep_pixels = int(
+            np.sum(component_temp < deep_k)
+        )
+        pixel_count = int(component_temp.size)
+
+        storm_cells.append({
+            "cell_id":
+                f"cell-{len(storm_cells) + 1}",
+            "center_lat":
+                round(center_cell_lat, 4),
+            "center_lon":
+                round(center_cell_lon, 4),
+            "pixel_count": pixel_count,
+            "deep_pixel_count": deep_pixels,
+            "approx_area_km2":
+                round(pixel_count * 4.0, 1),
+            "coldest_k":
+                round(coldest_k, 1),
+            "coldest_c":
+                round(coldest_k - 273.15, 1),
+            "mean_cloud_top_k":
+                round(float(np.mean(component_temp)), 1),
+            "distance_from_casa_km":
+                round(distance_km, 1),
+            "distance_from_casa_miles":
+                round(distance_km * 0.621371, 1),
+            "bearing_from_casa_deg":
+                round(bearing_degrees, 1),
+            "bbox": {
+                "south":
+                    round(float(np.min(component_lat)), 4),
+                "west":
+                    round(float(np.min(component_lon)), 4),
+                "north":
+                    round(float(np.max(component_lat)), 4),
+                "east":
+                    round(float(np.max(component_lon)), 4),
+            },
+        })
+
+    storm_cells.sort(
+        key=lambda cell: (
+            -cell["deep_pixel_count"],
+            cell["coldest_k"],
+            -cell["pixel_count"],
+        )
+    )
+
+    return storm_cells
 
 def observed_at(dataset: Dataset, fallback: datetime | None) -> str | None:
     if "t" in dataset.variables:
