@@ -126,7 +126,7 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
 
         x_grid, y_grid = np.meshgrid(xs[x_slice] * height, ys[y_slice] * height)
         lon, lat = to_geo.transform(x_grid, y_grid)
-        temp = np.ma.asarray(ds.variables["ACHT"][y_slice, x_slice]).filled(np.nan).astype(float)
+        temp = np.ma.asarray(ds.variables["TEMP"][y_slice, x_slice]).filled(np.nan).astype(float)
         valid = np.isfinite(temp) & np.isfinite(lat) & np.isfinite(lon)
         valid &= (lat >= south) & (lat <= north) & (lon >= west) & (lon <= east)
         cold = valid & (temp <= cold_k)
