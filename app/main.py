@@ -155,15 +155,7 @@ def cluster_storm_cells(
 
         if len(component) < min_pixels:
             continue
- storm_cells = cluster_storm_cells(
-            cold=cold,
-            temp=temp,
-            lat=lat,
-            lon=lon,
-            deep_k=deep_k,
-            center_lat=settings.center_lat,
-            center_lon=settings.center_lon,
-        )
+ 
         component_rows = np.asarray(
             [item[0] for item in component],
             dtype=int,
@@ -346,7 +338,17 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
                 "distance_from_casa_miles": round(float(distance) * 0.621371, 1),
             })
 
-        valid_temps = temp[valid]
+storm_cells = cluster_storm_cells(
+            cold=cold,
+            temp=temp,
+            lat=lat,
+            lon=lon,
+            deep_k=deep_k,
+            center_lat=settings.center_lat,
+            center_lon=settings.center_lon,
+        )        
+
+valid_temps = temp[valid]
         return {
             "observed_at": observed_at(ds, scan_time),
             "source": {"bucket": settings.bucket, "key": key, "satellite": "GOES-19", "product": settings.product},
