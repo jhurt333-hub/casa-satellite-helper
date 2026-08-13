@@ -155,7 +155,15 @@ def cluster_storm_cells(
 
         if len(component) < min_pixels:
             continue
-
+ storm_cells = cluster_storm_cells(
+            cold=cold,
+            temp=temp,
+            lat=lat,
+            lon=lon,
+            deep_k=deep_k,
+            center_lat=settings.center_lat,
+            center_lon=settings.center_lon,
+        )
         component_rows = np.asarray(
             [item[0] for item in component],
             dtype=int,
@@ -354,6 +362,7 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
                 "points_returned": len(points),
                 "points_truncated": int(cold.sum()) > len(points),
             },
+            "storm_cells": storm_cells,
             "cells": points,
         }
 
