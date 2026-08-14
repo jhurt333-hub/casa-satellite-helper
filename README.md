@@ -19,6 +19,11 @@ curl -H "X-API-Key: replace-with-a-long-random-value" \
 
 Interactive API documentation is at `/docs`; liveness is at `/health` and does not require a key.
 
+`GET /v1/rainfall` reads NOAA GOES-19 Rainfall Rate/QPE (`ABI-L2-RRQPEF`) and
+returns quality-filtered instantaneous rain estimates in mm/hour, the nearest
+valid estimate to Casa, connected rain areas, and the strongest rain pixels.
+This is satellite-estimated rainfall, not proof that rain reached the ground.
+
 Optional query parameters: `south`, `west`, `north`, `east`, `cold_k`, `deep_k`, and `max_points`. Boxes are limited to 5 degrees per axis and responses to 2,000 points. The coldest points are retained when the result is truncated.
 
 ## Deploy

@@ -19,13 +19,15 @@ from fastapi.responses import JSONResponse
 from netCDF4 import Dataset, num2date
 from pyproj import CRS, Transformer
 
+from app.rainfall import router as rainfall_router
+
 
 @dataclass(frozen=True)
 class Settings:
     bucket: str = os.getenv("GOES_BUCKET", "noaa-goes19")
     product: str = os.getenv("GOES_PRODUCT", "ABI-L2-ACHTF")
-    center_lat: float = float(os.getenv("CASA_LAT", "17.97"))
-    center_lon: float = float(os.getenv("CASA_LON", "-87.93"))
+    center_lat: float = float(os.getenv("CASA_LAT", "17.975"))
+    center_lon: float = float(os.getenv("CASA_LON", "-87.958056"))
     default_north: float = float(os.getenv("BBOX_NORTH", "18.35"))
     default_south: float = float(os.getenv("BBOX_SOUTH", "17.45"))
     default_west: float = float(os.getenv("BBOX_WEST", "-88.15"))
@@ -39,6 +41,7 @@ class Settings:
 
 settings = Settings()
 app = FastAPI(title="Casa GOES-19 Satellite Helper", version="1.0.0")
+app.include_router(rainfall_router)
 s3 = boto3.client("s3", config=BotoConfig(signature_version=UNSIGNED, retries={"max_attempts": 3}))
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _lock = asyncio.Lock()
@@ -103,6 +106,7 @@ def haversine_km(lat: np.ndarray, lon: np.ndarray, lat0: float, lon0: float) -> 
     a = np.sin(dp / 2) ** 2 + np.cos(p1) * math.cos(p2) * np.sin(dl / 2) ** 2
     return 6371.0088 * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
+
 def cluster_storm_cells(
     cold: np.ndarray,
     temp: np.ndarray,
@@ -112,180 +116,83 @@ def cluster_storm_cells(
     center_lat: float,
     center_lon: float,
     min_pixels: int = 3,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     visited = np.zeros(cold.shape, dtype=bool)
-    storm_cells = []
-
-    neighbor_offsets = (
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1),           (0, 1),
-        (1, -1),  (1, 0),  (1, 1),
-    )
-
+    storm_cells: list[dict[str, Any]] = []
+    neighbors = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
     height, width = cold.shape
 
     for start_row, start_col in zip(*np.where(cold)):
         if visited[start_row, start_col]:
             continue
-
         stack = [(int(start_row), int(start_col))]
         visited[start_row, start_col] = True
-        component = []
-
+        component: list[tuple[int, int]] = []
         while stack:
             row, col = stack.pop()
             component.append((row, col))
-
-            for row_offset, col_offset in neighbor_offsets:
-                next_row = row + row_offset
-                next_col = col + col_offset
-
+            for dr, dc in neighbors:
+                nr, nc = row + dr, col + dc
                 if (
-                    next_row < 0
-                    or next_row >= height
-                    or next_col < 0
-                    or next_col >= width
-                    or visited[next_row, next_col]
-                    or not cold[next_row, next_col]
+                    nr < 0 or nr >= height or nc < 0 or nc >= width
+                    or visited[nr, nc] or not cold[nr, nc]
                 ):
                     continue
-
-                visited[next_row, next_col] = True
-                stack.append((next_row, next_col))
-
+                visited[nr, nc] = True
+                stack.append((nr, nc))
         if len(component) < min_pixels:
             continue
- 
-        component_rows = np.asarray(
-            [item[0] for item in component],
-            dtype=int,
-        )
-        component_cols = np.asarray(
-            [item[1] for item in component],
-            dtype=int,
-        )
 
-        component_lat = lat[
-            component_rows,
-            component_cols
-        ]
-        component_lon = lon[
-            component_rows,
-            component_cols
-        ]
-        component_temp = temp[
-            component_rows,
-            component_cols
-        ]
-
-        finite = (
-            np.isfinite(component_lat)
-            & np.isfinite(component_lon)
-            & np.isfinite(component_temp)
-        )
-
+        rows = np.asarray([item[0] for item in component], dtype=int)
+        cols = np.asarray([item[1] for item in component], dtype=int)
+        component_lat = lat[rows, cols]
+        component_lon = lon[rows, cols]
+        component_temp = temp[rows, cols]
+        finite = np.isfinite(component_lat) & np.isfinite(component_lon) & np.isfinite(component_temp)
         if not finite.any():
             continue
-
         component_lat = component_lat[finite]
         component_lon = component_lon[finite]
         component_temp = component_temp[finite]
-
-        center_cell_lat = float(
-            np.mean(component_lat)
-        )
-        center_cell_lon = float(
-            np.mean(component_lon)
-        )
-
-        distance_km = float(
-            haversine_km(
-                np.asarray([center_cell_lat]),
-                np.asarray([center_cell_lon]),
-                center_lat,
-                center_lon,
-            )[0]
-        )
-
-        latitude_difference = math.radians(
-            center_cell_lat - center_lat
-        )
-        longitude_difference = math.radians(
-            center_cell_lon - center_lon
-        )
-
-        bearing_y = (
-            math.sin(longitude_difference)
-            * math.cos(math.radians(center_cell_lat))
-        )
-
+        cell_lat = float(np.mean(component_lat))
+        cell_lon = float(np.mean(component_lon))
+        distance_km = float(haversine_km(
+            np.asarray([cell_lat]), np.asarray([cell_lon]), center_lat, center_lon
+        )[0])
+        dlat = math.radians(cell_lat - center_lat)
+        dlon = math.radians(cell_lon - center_lon)
+        bearing_y = math.sin(dlon) * math.cos(math.radians(cell_lat))
         bearing_x = (
-            math.cos(math.radians(center_lat))
-            * math.sin(math.radians(center_cell_lat))
-            - math.sin(math.radians(center_lat))
-            * math.cos(math.radians(center_cell_lat))
-            * math.cos(longitude_difference)
+            math.cos(math.radians(center_lat)) * math.sin(math.radians(cell_lat))
+            - math.sin(math.radians(center_lat)) * math.cos(math.radians(cell_lat)) * math.cos(dlon)
         )
-
-        bearing_degrees = (
-            math.degrees(
-                math.atan2(bearing_y, bearing_x)
-            )
-            + 360
-        ) % 360
-
-        coldest_k = float(
-            np.min(component_temp)
-        )
-        deep_pixels = int(
-            np.sum(component_temp < deep_k)
-        )
+        bearing = (math.degrees(math.atan2(bearing_y, bearing_x)) + 360) % 360
+        coldest_k = float(np.min(component_temp))
         pixel_count = int(component_temp.size)
-
         storm_cells.append({
-            "cell_id":
-                f"cell-{len(storm_cells) + 1}",
-            "center_lat":
-                round(center_cell_lat, 4),
-            "center_lon":
-                round(center_cell_lon, 4),
+            "cell_id": f"cell-{len(storm_cells) + 1}",
+            "center_lat": round(cell_lat, 4),
+            "center_lon": round(cell_lon, 4),
             "pixel_count": pixel_count,
-            "deep_pixel_count": deep_pixels,
-            "approx_area_km2":
-                round(pixel_count * 4.0, 1),
-            "coldest_k":
-                round(coldest_k, 1),
-            "coldest_c":
-                round(coldest_k - 273.15, 1),
-            "mean_cloud_top_k":
-                round(float(np.mean(component_temp)), 1),
-            "distance_from_casa_km":
-                round(distance_km, 1),
-            "distance_from_casa_miles":
-                round(distance_km * 0.621371, 1),
-            "bearing_from_casa_deg":
-                round(bearing_degrees, 1),
+            "deep_pixel_count": int(np.sum(component_temp < deep_k)),
+            "approx_area_km2": round(pixel_count * 4.0, 1),
+            "coldest_k": round(coldest_k, 1),
+            "coldest_c": round(coldest_k - 273.15, 1),
+            "mean_cloud_top_k": round(float(np.mean(component_temp)), 1),
+            "distance_from_casa_km": round(distance_km, 1),
+            "distance_from_casa_miles": round(distance_km * 0.621371, 1),
+            "bearing_from_casa_deg": round(bearing, 1),
             "bbox": {
-                "south":
-                    round(float(np.min(component_lat)), 4),
-                "west":
-                    round(float(np.min(component_lon)), 4),
-                "north":
-                    round(float(np.max(component_lat)), 4),
-                "east":
-                    round(float(np.max(component_lon)), 4),
+                "south": round(float(np.min(component_lat)), 4),
+                "west": round(float(np.min(component_lon)), 4),
+                "north": round(float(np.max(component_lat)), 4),
+                "east": round(float(np.max(component_lon)), 4),
             },
         })
 
-    storm_cells.sort(
-        key=lambda cell: (
-            -cell["deep_pixel_count"],
-            cell["coldest_k"],
-            -cell["pixel_count"],
-        )
-    )
-
+    storm_cells.sort(key=lambda cell: (-cell["deep_pixel_count"], cell["coldest_k"], -cell["pixel_count"]))
     return storm_cells
+
 
 def observed_at(dataset: Dataset, fallback: datetime | None) -> str | None:
     if "t" in dataset.variables:
@@ -293,6 +200,14 @@ def observed_at(dataset: Dataset, fallback: datetime | None) -> str | None:
         dt = num2date(var[:].item(), var.units, only_use_cftime_datetimes=False)
         return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     return fallback.isoformat().replace("+00:00", "Z") if fallback else None
+
+
+def temperature_variable(dataset: Dataset):
+    for name in ("TEMP", "ACHT", "cloud_top_temperature"):
+        if name in dataset.variables:
+            return dataset.variables[name]
+    available = ", ".join(dataset.variables.keys())
+    raise KeyError(f"Cloud-top temperature variable not found; available variables: {available}")
 
 
 def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float, float, float, float], cold_k: float, deep_k: float, max_points: int) -> dict[str, Any]:
@@ -309,7 +224,7 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
 
         x_grid, y_grid = np.meshgrid(xs[x_slice] * height, ys[y_slice] * height)
         lon, lat = to_geo.transform(x_grid, y_grid)
-        temp = np.ma.asarray(ds.variables["TEMP"][y_slice, x_slice]).filled(np.nan).astype(float)
+        temp = np.ma.asarray(temperature_variable(ds)[y_slice, x_slice]).filled(np.nan).astype(float)
         valid = np.isfinite(temp) & np.isfinite(lat) & np.isfinite(lon)
         valid &= (lat >= south) & (lat <= north) & (lon >= west) & (lon <= east)
         cold = valid & (temp <= cold_k)
@@ -339,34 +254,27 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
             })
 
         storm_cells = cluster_storm_cells(
-                    cold=cold,
-                    temp=temp,
-                    lat=lat,
-                    lon=lon,
-                    deep_k=deep_k,
-                    center_lat=settings.center_lat,
-                    center_lon=settings.center_lon,
-                )        
-        
+            cold, temp, lat, lon, deep_k, settings.center_lat, settings.center_lon
+        )
         valid_temps = temp[valid]
         return {
-                    "observed_at": observed_at(ds, scan_time),
-                    "source": {"bucket": settings.bucket, "key": key, "satellite": "GOES-19", "product": settings.product},
-                    "center": {"name": "Casa de Rasta / Secret Beach", "lat": settings.center_lat, "lon": settings.center_lon},
-                    "bbox": {"south": south, "west": west, "north": north, "east": east},
-                    "thresholds_k": {"cold": cold_k, "deep": deep_k},
-                    "summary": {
-                        "valid_pixels": int(valid.sum()),
-                        "cold_pixels": int(cold.sum()),
-                        "deep_pixels": int((valid & (temp <= deep_k)).sum()),
-                        "coldest_k": round(float(np.nanmin(valid_temps)), 1) if valid_temps.size else None,
-                        "coldest_c": round(float(np.nanmin(valid_temps)) - 273.15, 1) if valid_temps.size else None,
-                        "points_returned": len(points),
-                        "points_truncated": int(cold.sum()) > len(points),
-                    },
-                    "storm_cells": storm_cells,
-                    "cells": points,
-                }
+            "observed_at": observed_at(ds, scan_time),
+            "source": {"bucket": settings.bucket, "key": key, "satellite": "GOES-19", "product": settings.product},
+            "center": {"name": "Casa de Rasta / Secret Beach", "lat": settings.center_lat, "lon": settings.center_lon},
+            "bbox": {"south": south, "west": west, "north": north, "east": east},
+            "thresholds_k": {"cold": cold_k, "deep": deep_k},
+            "summary": {
+                "valid_pixels": int(valid.sum()),
+                "cold_pixels": int(cold.sum()),
+                "deep_pixels": int((valid & (temp <= deep_k)).sum()),
+                "coldest_k": round(float(np.nanmin(valid_temps)), 1) if valid_temps.size else None,
+                "coldest_c": round(float(np.nanmin(valid_temps)) - 273.15, 1) if valid_temps.size else None,
+                "points_returned": len(points),
+                "points_truncated": int(cold.sum()) > len(points),
+            },
+            "storm_cells": storm_cells,
+            "cells": points,
+        }
 
 
 def fetch_and_parse(box: tuple[float, float, float, float], cold_k: float, deep_k: float, max_points: int) -> dict[str, Any]:
