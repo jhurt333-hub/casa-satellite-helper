@@ -349,7 +349,7 @@ storm_cells = cluster_storm_cells(
         )        
 
 valid_temps = temp[valid]
-        return {
+return {
             "observed_at": observed_at(ds, scan_time),
             "source": {"bucket": settings.bucket, "key": key, "satellite": "GOES-19", "product": settings.product},
             "center": {"name": "Casa de Rasta / Secret Beach", "lat": settings.center_lat, "lon": settings.center_lon},
