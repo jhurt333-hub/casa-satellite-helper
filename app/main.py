@@ -338,35 +338,35 @@ def parse_file(path: str, key: str, scan_time: datetime | None, box: tuple[float
                 "distance_from_casa_miles": round(float(distance) * 0.621371, 1),
             })
 
-storm_cells = cluster_storm_cells(
-            cold=cold,
-            temp=temp,
-            lat=lat,
-            lon=lon,
-            deep_k=deep_k,
-            center_lat=settings.center_lat,
-            center_lon=settings.center_lon,
-        )        
-
-valid_temps = temp[valid]
-return {
-            "observed_at": observed_at(ds, scan_time),
-            "source": {"bucket": settings.bucket, "key": key, "satellite": "GOES-19", "product": settings.product},
-            "center": {"name": "Casa de Rasta / Secret Beach", "lat": settings.center_lat, "lon": settings.center_lon},
-            "bbox": {"south": south, "west": west, "north": north, "east": east},
-            "thresholds_k": {"cold": cold_k, "deep": deep_k},
-            "summary": {
-                "valid_pixels": int(valid.sum()),
-                "cold_pixels": int(cold.sum()),
-                "deep_pixels": int((valid & (temp <= deep_k)).sum()),
-                "coldest_k": round(float(np.nanmin(valid_temps)), 1) if valid_temps.size else None,
-                "coldest_c": round(float(np.nanmin(valid_temps)) - 273.15, 1) if valid_temps.size else None,
-                "points_returned": len(points),
-                "points_truncated": int(cold.sum()) > len(points),
-            },
-            "storm_cells": storm_cells,
-            "cells": points,
-        }
+        storm_cells = cluster_storm_cells(
+                    cold=cold,
+                    temp=temp,
+                    lat=lat,
+                    lon=lon,
+                    deep_k=deep_k,
+                    center_lat=settings.center_lat,
+                    center_lon=settings.center_lon,
+                )        
+        
+        valid_temps = temp[valid]
+        return {
+                    "observed_at": observed_at(ds, scan_time),
+                    "source": {"bucket": settings.bucket, "key": key, "satellite": "GOES-19", "product": settings.product},
+                    "center": {"name": "Casa de Rasta / Secret Beach", "lat": settings.center_lat, "lon": settings.center_lon},
+                    "bbox": {"south": south, "west": west, "north": north, "east": east},
+                    "thresholds_k": {"cold": cold_k, "deep": deep_k},
+                    "summary": {
+                        "valid_pixels": int(valid.sum()),
+                        "cold_pixels": int(cold.sum()),
+                        "deep_pixels": int((valid & (temp <= deep_k)).sum()),
+                        "coldest_k": round(float(np.nanmin(valid_temps)), 1) if valid_temps.size else None,
+                        "coldest_c": round(float(np.nanmin(valid_temps)) - 273.15, 1) if valid_temps.size else None,
+                        "points_returned": len(points),
+                        "points_truncated": int(cold.sum()) > len(points),
+                    },
+                    "storm_cells": storm_cells,
+                    "cells": points,
+                }
 
 
 def fetch_and_parse(box: tuple[float, float, float, float], cold_k: float, deep_k: float, max_points: int) -> dict[str, Any]:
